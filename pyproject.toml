@@ -1,0 +1,35 @@
+[project]
+name = "robocup2026-linetrace-model"
+version = "0.1.0"
+description = "ML-based line tracing for RoboCup 2026 - data collection and model training"
+requires-python = ">=3.11"
+dependencies = [
+    # Client (controller GUI)
+    "pygame>=2.5.0",
+    "opencv-python>=4.8.0",
+    "numpy>=1.24.0",
+    # Training (to be added later)
+    # "tensorflow>=2.15.0",
+]
+
+[project.optional-dependencies]
+# Dependencies for the Pi server (most are pre-installed on Pi OS).
+# Install with: pip install -e ".[pi]"
+pi = [
+    "pyserial>=3.5",
+    "opencv-python>=4.8.0",
+    "numpy>=1.24.0",
+    # picamera2 and libcamera come with Raspberry Pi OS
+]
+training = [
+    "tensorflow>=2.15.0",
+    "matplotlib>=3.8.0",
+    "pandas>=2.1.0",
+]
+
+[tool.setuptools]
+py-modules = []
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = []

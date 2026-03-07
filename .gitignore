@@ -1,0 +1,24 @@
+# Training data (large, local only)
+data/session_*
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+.direnv/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Model files
+*.h5
+*.tflite
+*.savedmodel/
