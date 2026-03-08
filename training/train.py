@@ -9,7 +9,7 @@ linetrace camera image. Architecture is based on NVIDIA's PilotNet
 Usage:
     python3 training/train.py data/session_*
     python3 training/train.py data/session_20260307_* --epochs 50
-    python3 training/train.py data/session_* --use-gyro --augment
+    python3 training/train.py data/session_* --use-sensors --augment
 
 Output (saved to models/):
     linetrace_model.keras   Full Keras model
@@ -35,24 +35,27 @@ MOTOR_MIN = 1000
 MOTOR_MAX = 2000
 
 
-def load_sessions(session_dirs, skip_stopped=True, use_gyro=False):
+def load_sessions(session_dirs, skip_stopped=True, use_sensors=False):
     """Load training data from one or more recorded sessions.
 
     Args:
         session_dirs: List of session directory paths.
         skip_stopped: If True, skip frames where both motors are 1500.
-        use_gyro: If True, also load gyro data as additional features.
+        use_sensors: If True, also load gyro + ultrasonic data as features.
 
     Returns:
         images: np.array of shape (N, MODEL_H, MODEL_W, 3), float32 [0,1].
         labels: np.array of shape (N, 2), float32 [0,1] (left, right motor).
-        gyro: np.array of shape (N, 6) if use_gyro, else None.
+        sensors: np.array of shape (N, 9) if use_sensors, else None.
+            Columns: yaw, roll, pitch, acc_x, acc_y, acc_z, usonic_l, usonic_m, usonic_r
+        session_sizes: List of frame counts per session (for sequence creation).
     """
     import pandas as pd
 
     images = []
     labels = []
-    gyro_data = [] if use_gyro else None
+    sensor_data = [] if use_sensors else None
+    session_sizes = []
     total_skipped = 0
 
     for session_dir in session_dirs:
@@ -95,12 +98,18 @@ def load_sessions(session_dirs, skip_stopped=True, use_gyro=False):
             labels.append([left_norm, right_norm])
             loaded += 1
 
-            if use_gyro:
-                gyro_data.append([
-                    float(row['yaw']), float(row['roll']), float(row['pitch']),
-                    float(row['acc_x']), float(row['acc_y']), float(row['acc_z']),
+            if use_sensors:
+                # Default to 0 for gyro, -1 for ultrasonic if columns missing
+                sensor_data.append([
+                    float(row.get('yaw', 0)), float(row.get('roll', 0)),
+                    float(row.get('pitch', 0)),
+                    float(row.get('acc_x', 0)), float(row.get('acc_y', 0)),
+                    float(row.get('acc_z', 0)),
+                    float(row.get('usonic_l', -1)), float(row.get('usonic_m', -1)),
+                    float(row.get('usonic_r', -1)),
                 ])
 
+        session_sizes.append(loaded)
         print(f"  {session_dir}: {loaded} frames loaded")
 
     if total_skipped > 0:
@@ -108,12 +117,78 @@ def load_sessions(session_dirs, skip_stopped=True, use_gyro=False):
 
     images = np.array(images, dtype=np.float32)
     labels = np.array(labels, dtype=np.float32)
-    gyro_arr = np.array(gyro_data, dtype=np.float32) if use_gyro else None
+    sensor_arr = np.array(sensor_data, dtype=np.float32) if use_sensors else None
 
-    return images, labels, gyro_arr
+    return images, labels, sensor_arr, session_sizes
 
 
-def augment_horizontal_flip(images, labels, gyro=None):
+def create_sequences(images, labels, sensors, seq_len, session_sizes):
+    """Group consecutive frames into sequences, respecting session boundaries.
+
+    Each sequence contains seq_len consecutive frames from the same session.
+    The label is the motor command for the last frame in the sequence.
+
+    Returns:
+        seq_images: np.array of shape (M, seq_len, H, W, 3).
+        seq_labels: np.array of shape (M, 2).
+        seq_sensors: np.array of shape (M, seq_len, 9) if sensors provided, else None.
+    """
+    seq_images = []
+    seq_labels = []
+    seq_sensors = []
+
+    offset = 0
+    for size in session_sizes:
+        for i in range(seq_len - 1, size):
+            idx = offset + i
+            seq_images.append(images[idx - seq_len + 1:idx + 1])
+            seq_labels.append(labels[idx])
+            if sensors is not None:
+                seq_sensors.append(sensors[idx - seq_len + 1:idx + 1])
+        offset += size
+
+    seq_images = np.array(seq_images, dtype=np.float32)
+    seq_labels = np.array(seq_labels, dtype=np.float32)
+    seq_sensors = np.array(seq_sensors, dtype=np.float32) if sensors is not None else None
+
+    return seq_images, seq_labels, seq_sensors
+
+
+def augment_seq_horizontal_flip(seq_images, seq_labels, seq_sensors=None):
+    """Horizontal flip augmentation for sequences."""
+    flipped_images = seq_images[:, :, :, ::-1, :].copy()
+    flipped_labels = seq_labels[:, ::-1].copy()
+
+    aug_images = np.concatenate([seq_images, flipped_images])
+    aug_labels = np.concatenate([seq_labels, flipped_labels])
+
+    aug_sensors = None
+    if seq_sensors is not None:
+        aug_sensors = np.concatenate([seq_sensors, seq_sensors.copy()])
+
+    return aug_images, aug_labels, aug_sensors
+
+
+def augment_seq_brightness(seq_images, seq_labels, seq_sensors=None,
+                           factor_range=(0.6, 1.4)):
+    """Random brightness augmentation for sequences (same factor per sequence)."""
+    n = len(seq_images)
+    factors = np.random.uniform(
+        factor_range[0], factor_range[1], size=(n, 1, 1, 1, 1)
+    )
+    bright_images = np.clip(seq_images * factors, 0.0, 1.0).astype(np.float32)
+
+    aug_images = np.concatenate([seq_images, bright_images])
+    aug_labels = np.concatenate([seq_labels, seq_labels.copy()])
+
+    aug_sensors = None
+    if seq_sensors is not None:
+        aug_sensors = np.concatenate([seq_sensors, seq_sensors.copy()])
+
+    return aug_images, aug_labels, aug_sensors
+
+
+def augment_horizontal_flip(images, labels, sensors=None):
     """Horizontal flip augmentation — flips image and swaps left/right motor."""
     flipped_images = images[:, :, ::-1, :].copy()
     flipped_labels = labels[:, ::-1].copy()
@@ -121,15 +196,15 @@ def augment_horizontal_flip(images, labels, gyro=None):
     aug_images = np.concatenate([images, flipped_images])
     aug_labels = np.concatenate([labels, flipped_labels])
 
-    aug_gyro = None
-    if gyro is not None:
-        # Gyro values stay the same (flip doesn't change sensor readings)
-        aug_gyro = np.concatenate([gyro, gyro.copy()])
+    aug_sensors = None
+    if sensors is not None:
+        # Sensor values stay the same (flip doesn't change sensor readings)
+        aug_sensors = np.concatenate([sensors, sensors.copy()])
 
-    return aug_images, aug_labels, aug_gyro
+    return aug_images, aug_labels, aug_sensors
 
 
-def augment_brightness(images, labels, gyro=None, factor_range=(0.6, 1.4)):
+def augment_brightness(images, labels, sensors=None, factor_range=(0.6, 1.4)):
     """Random brightness augmentation."""
     n = len(images)
     factors = np.random.uniform(factor_range[0], factor_range[1], size=(n, 1, 1, 1))
@@ -138,11 +213,11 @@ def augment_brightness(images, labels, gyro=None, factor_range=(0.6, 1.4)):
     aug_images = np.concatenate([images, bright_images])
     aug_labels = np.concatenate([labels, labels.copy()])
 
-    aug_gyro = None
-    if gyro is not None:
-        aug_gyro = np.concatenate([gyro, gyro.copy()])
+    aug_sensors = None
+    if sensors is not None:
+        aug_sensors = np.concatenate([sensors, sensors.copy()])
 
-    return aug_images, aug_labels, aug_gyro
+    return aug_images, aug_labels, aug_sensors
 
 
 def build_model_image_only(input_shape=(MODEL_H, MODEL_W, 3)):
@@ -170,8 +245,8 @@ def build_model_image_only(input_shape=(MODEL_H, MODEL_W, 3)):
     return model
 
 
-def build_model_with_gyro(image_shape=(MODEL_H, MODEL_W, 3), gyro_shape=(6,)):
-    """Multi-input model: image + gyro -> motor speeds."""
+def build_model_with_sensors(image_shape=(MODEL_H, MODEL_W, 3), sensor_shape=(9,)):
+    """Multi-input model: image + sensors (gyro + ultrasonic) -> motor speeds."""
     import tensorflow as tf
     from tensorflow.keras import layers
 
@@ -186,19 +261,70 @@ def build_model_with_gyro(image_shape=(MODEL_H, MODEL_W, 3), gyro_shape=(6,)):
     x = layers.Dropout(0.3)(x)
     x = layers.Dense(100, activation='relu')(x)
 
-    # Gyro branch
-    gyro_input = layers.Input(shape=gyro_shape, name='gyro')
-    g = layers.Dense(32, activation='relu')(gyro_input)
-    g = layers.Dense(16, activation='relu')(g)
+    # Sensor branch (gyro: yaw/roll/pitch/acc_xyz + ultrasonic: L/M/R)
+    sensor_input = layers.Input(shape=sensor_shape, name='sensors')
+    s = layers.Dense(32, activation='relu')(sensor_input)
+    s = layers.Dense(16, activation='relu')(s)
 
     # Merge
-    merged = layers.Concatenate()([x, g])
+    merged = layers.Concatenate()([x, s])
     merged = layers.Dropout(0.3)(merged)
     merged = layers.Dense(50, activation='relu')(merged)
     merged = layers.Dense(10, activation='relu')(merged)
     output = layers.Dense(2, activation='sigmoid', name='motors')(merged)
 
-    model = tf.keras.Model(inputs=[image_input, gyro_input], outputs=output)
+    model = tf.keras.Model(inputs=[image_input, sensor_input], outputs=output)
+    return model
+
+
+def build_model_with_memory(seq_len, image_shape=(MODEL_H, MODEL_W, 3),
+                            use_sensors=False, sensor_dim=9):
+    """CNN + LSTM model: sequence of frames (+ sensors) -> motor speeds.
+
+    The same CNN processes each frame in the sequence (TimeDistributed),
+    producing a feature vector per timestep. An LSTM then reads the
+    sequence of features and outputs the motor command for the current moment.
+    """
+    import tensorflow as tf
+    from tensorflow.keras import layers
+
+    # Image sequence branch
+    image_input = layers.Input(shape=(seq_len, *image_shape), name='image_seq')
+    x = layers.TimeDistributed(
+        layers.Conv2D(24, 5, strides=2, activation='relu'))(image_input)
+    x = layers.TimeDistributed(
+        layers.Conv2D(36, 5, strides=2, activation='relu'))(x)
+    x = layers.TimeDistributed(
+        layers.Conv2D(48, 5, strides=2, activation='relu'))(x)
+    x = layers.TimeDistributed(
+        layers.Conv2D(64, 3, activation='relu'))(x)
+    x = layers.TimeDistributed(
+        layers.Conv2D(64, 3, activation='relu'))(x)
+    x = layers.TimeDistributed(layers.Flatten())(x)
+    x = layers.TimeDistributed(layers.Dense(100, activation='relu'))(x)
+
+    inputs = [image_input]
+
+    if use_sensors:
+        # Sensor sequence branch
+        sensor_input = layers.Input(
+            shape=(seq_len, sensor_dim), name='sensor_seq')
+        s = layers.TimeDistributed(
+            layers.Dense(32, activation='relu'))(sensor_input)
+        s = layers.TimeDistributed(
+            layers.Dense(16, activation='relu'))(s)
+        # Concatenate image features + sensor features per timestep
+        x = layers.Concatenate()([x, s])
+        inputs.append(sensor_input)
+
+    # LSTM reads the sequence of per-frame features
+    x = layers.LSTM(64)(x)
+    x = layers.Dropout(0.3)(x)
+    x = layers.Dense(50, activation='relu')(x)
+    x = layers.Dense(10, activation='relu')(x)
+    output = layers.Dense(2, activation='sigmoid', name='motors')(x)
+
+    model = tf.keras.Model(inputs=inputs, outputs=output)
     return model
 
 
@@ -267,8 +393,12 @@ def main():
                         help="Apply data augmentation (flip + brightness)")
     parser.add_argument('--include-stopped', action='store_true',
                         help="Include frames where both motors are 1500 (stopped)")
-    parser.add_argument('--use-gyro', action='store_true',
-                        help="Include gyro data as additional model input")
+    parser.add_argument('--use-sensors', action='store_true',
+                        help="Include sensor data (gyro + ultrasonic) as additional model input")
+    parser.add_argument('--use-memory', action='store_true',
+                        help="Use CNN+LSTM model that considers past frames for temporal context")
+    parser.add_argument('--seq-len', type=int, default=5,
+                        help="Number of consecutive frames per sequence (default: 5, used with --use-memory)")
     parser.add_argument('--output-dir', default='models',
                         help="Directory to save trained models (default: models/)")
     args = parser.parse_args()
@@ -281,10 +411,10 @@ def main():
         sys.exit(1)
 
     print(f"Loading {len(session_dirs)} session(s)...")
-    images, labels, gyro = load_sessions(
+    images, labels, sensors, session_sizes = load_sessions(
         session_dirs,
         skip_stopped=not args.include_stopped,
-        use_gyro=args.use_gyro,
+        use_sensors=args.use_sensors,
     )
 
     if len(images) == 0:
@@ -295,33 +425,73 @@ def main():
     print(f"Label range: left=[{labels[:,0].min():.2f}, {labels[:,0].max():.2f}] "
           f"right=[{labels[:,1].min():.2f}, {labels[:,1].max():.2f}]")
 
-    if args.augment:
-        print("Applying augmentation...")
-        images, labels, gyro = augment_horizontal_flip(images, labels, gyro)
-        images, labels, gyro = augment_brightness(images, labels, gyro)
-        print(f"After augmentation: {len(images)} frames")
-
-    # Shuffle
-    indices = np.random.permutation(len(images))
-    images = images[indices]
-    labels = labels[indices]
-    if gyro is not None:
-        gyro = gyro[indices]
-
     # Import TensorFlow (delayed to keep startup fast)
     print("Loading TensorFlow...")
     import tensorflow as tf
     print(f"TensorFlow {tf.__version__}")
 
-    # Build model
-    if args.use_gyro and gyro is not None:
-        print("Building model with image + gyro inputs...")
-        model = build_model_with_gyro()
-        train_x = {'image': images, 'gyro': gyro}
+    if args.use_memory:
+        # --- Memory (LSTM) path: create sequences first, then augment ---
+        seq_len = args.seq_len
+        print(f"Creating sequences (length={seq_len})...")
+        seq_images, seq_labels, seq_sensors = create_sequences(
+            images, labels, sensors, seq_len, session_sizes,
+        )
+        print(f"Created {len(seq_images)} sequences")
+
+        if args.augment:
+            print("Applying augmentation...")
+            seq_images, seq_labels, seq_sensors = augment_seq_horizontal_flip(
+                seq_images, seq_labels, seq_sensors)
+            seq_images, seq_labels, seq_sensors = augment_seq_brightness(
+                seq_images, seq_labels, seq_sensors)
+            print(f"After augmentation: {len(seq_images)} sequences")
+
+        # Shuffle sequences
+        indices = np.random.permutation(len(seq_images))
+        seq_images = seq_images[indices]
+        seq_labels = seq_labels[indices]
+        if seq_sensors is not None:
+            seq_sensors = seq_sensors[indices]
+
+        # Build model
+        use_sensors = args.use_sensors and seq_sensors is not None
+        print(f"Building CNN+LSTM model (seq_len={seq_len}, "
+              f"sensors={'yes' if use_sensors else 'no'})...")
+        model = build_model_with_memory(
+            seq_len, use_sensors=use_sensors)
+        if use_sensors:
+            train_x = {'image_seq': seq_images, 'sensor_seq': seq_sensors}
+        else:
+            train_x = seq_images
+        labels = seq_labels
+
     else:
-        print("Building image-only model...")
-        model = build_model_image_only()
-        train_x = images
+        # --- Stateless path: single frame models ---
+        if args.augment:
+            print("Applying augmentation...")
+            images, labels, sensors = augment_horizontal_flip(
+                images, labels, sensors)
+            images, labels, sensors = augment_brightness(
+                images, labels, sensors)
+            print(f"After augmentation: {len(images)} frames")
+
+        # Shuffle
+        indices = np.random.permutation(len(images))
+        images = images[indices]
+        labels = labels[indices]
+        if sensors is not None:
+            sensors = sensors[indices]
+
+        # Build model
+        if args.use_sensors and sensors is not None:
+            print("Building model with image + sensor inputs...")
+            model = build_model_with_sensors()
+            train_x = {'image': images, 'sensors': sensors}
+        else:
+            print("Building image-only model...")
+            model = build_model_image_only()
+            train_x = images
 
     model.compile(
         optimizer=tf.keras.optimizers.Adam(learning_rate=args.learning_rate),
@@ -372,8 +542,10 @@ def main():
         'model_input_h': MODEL_H,
         'motor_min': MOTOR_MIN,
         'motor_max': MOTOR_MAX,
-        'use_gyro': args.use_gyro,
-        'training_frames': len(images),
+        'use_sensors': args.use_sensors,
+        'use_memory': args.use_memory,
+        'seq_len': args.seq_len if args.use_memory else 1,
+        'training_samples': len(labels),
         'epochs_trained': len(history.history['loss']),
         'final_val_loss': float(history.history['val_loss'][-1]),
         'final_val_mae': float(history.history['val_mae'][-1]),

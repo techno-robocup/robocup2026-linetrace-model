@@ -143,6 +143,22 @@ class UARTDevice:
                 pass
         return None
 
+    def get_ultrasonic(self):
+        """Read ultrasonic sensor data (left, middle, right). Returns dict or None."""
+        resp = self.send("GET usonic")
+        if resp and not resp.startswith("ERR"):
+            try:
+                values = list(map(float, resp.split()))
+                if len(values) == 3:
+                    return {
+                        'usonic_l': values[0],
+                        'usonic_m': values[1],
+                        'usonic_r': values[2],
+                    }
+            except ValueError:
+                pass
+        return None
+
     def set_motor(self, left: int, right: int):
         """Set motor speeds (1000-2000, 1500=stop)."""
         left = max(1000, min(2000, int(left)))
@@ -292,6 +308,8 @@ class StreamingServer:
                 frame = frame[:, x_start:x_start + crop_w]
                 frame = cv2.resize(frame, (w, h), interpolation=cv2.INTER_LINEAR)
 
+                # picamera2 captures RGB, but cv2.imencode expects BGR
+                frame = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
                 _, jpeg = cv2.imencode(
                     '.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, JPEG_QUALITY]
                 )
@@ -331,6 +349,8 @@ class StreamingServer:
                 frame = cam.capture_array("lores")
                 # Camera is mounted upside-down
                 frame = cv2.rotate(frame, cv2.ROTATE_180)
+                # picamera2 captures RGB, but cv2.imencode expects BGR
+                frame = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
                 _, jpeg = cv2.imencode(
                     '.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, JPEG_QUALITY - 10]
                 )
@@ -341,7 +361,7 @@ class StreamingServer:
                 time.sleep(0.5)
 
     def _uart_loop(self):
-        """Handle UART communication: send motor commands + read gyro."""
+        """Handle UART communication: send motor commands + read gyro + ultrasonic."""
         print("[UART] Loop started")
         while self.running:
             # Send pending motor command (if any)
@@ -353,7 +373,16 @@ class StreamingServer:
                 self.uart.set_motor(cmd['left'], cmd['right'])
 
             # Read gyro
-            data = self.uart.get_gyro()
+            data = {}
+            gyro = self.uart.get_gyro()
+            if gyro:
+                data.update(gyro)
+
+            # Read ultrasonic
+            usonic = self.uart.get_ultrasonic()
+            if usonic:
+                data.update(usonic)
+
             if data:
                 data['timestamp'] = time.time()
                 payload = json.dumps(data).encode('utf-8')

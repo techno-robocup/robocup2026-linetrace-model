@@ -108,6 +108,7 @@ class RobotController:
         # Recording
         self.recording = False
         self._record_dir = None
+        self._record_file = None
         self._record_csv = None
         self._record_count = 0
         self._record_interval = 0.1  # Save at 10 Hz
@@ -172,8 +173,9 @@ class RobotController:
     def _toggle_recording(self):
         if self.recording:
             self.recording = False
-            if self._record_csv:
-                self._record_csv.close()
+            if self._record_file:
+                self._record_file.close()
+                self._record_file = None
                 self._record_csv = None
             print(f"Recording stopped. {self._record_count} frames saved to {self._record_dir}")
         else:
@@ -181,11 +183,12 @@ class RobotController:
             self._record_dir = os.path.join('data', f'session_{ts}')
             os.makedirs(os.path.join(self._record_dir, 'linetrace'), exist_ok=True)
             os.makedirs(os.path.join(self._record_dir, 'rescue'), exist_ok=True)
-            f = open(os.path.join(self._record_dir, 'labels.csv'), 'w', newline='')
-            self._record_csv = csv.writer(f)
+            self._record_file = open(os.path.join(self._record_dir, 'labels.csv'), 'w', newline='')
+            self._record_csv = csv.writer(self._record_file)
             self._record_csv.writerow([
                 'timestamp', 'motor_left', 'motor_right',
                 'yaw', 'roll', 'pitch', 'acc_x', 'acc_y', 'acc_z',
+                'usonic_l', 'usonic_m', 'usonic_r',
                 'linetrace_file', 'rescue_file',
             ])
             self._record_count = 0
@@ -224,6 +227,9 @@ class RobotController:
             f"{sensor.get('acc_x', 0):.2f}",
             f"{sensor.get('acc_y', 0):.2f}",
             f"{sensor.get('acc_z', 0):.2f}",
+            f"{sensor.get('usonic_l', -1):.1f}",
+            f"{sensor.get('usonic_m', -1):.1f}",
+            f"{sensor.get('usonic_r', -1):.1f}",
             lt_file, rc_file,
         ])
         self._record_count += 1
@@ -256,7 +262,7 @@ class RobotController:
 
     def _ui_loop(self):
         pygame.init()
-        WIDTH, HEIGHT = 960, 620
+        WIDTH, HEIGHT = 960, 644
         screen = pygame.display.set_mode((WIDTH, HEIGHT))
         pygame.display.set_caption("Robot Controller")
         clock = pygame.time.Clock()
@@ -385,6 +391,17 @@ class RobotController:
             az = sensor.get('acc_z', 0)
             t = font.render(
                 f"Accel  X:{ax:8.2f}   Y:{ay:8.2f}   Z:{az:8.2f}",
+                True, (200, 200, 200)
+            )
+            screen.blit(t, (10, panel_y))
+            panel_y += line_h
+
+            # Ultrasonic
+            ul = sensor.get('usonic_l', -1)
+            um = sensor.get('usonic_m', -1)
+            ur = sensor.get('usonic_r', -1)
+            t = font.render(
+                f"Usonic L:{ul:8.1f}   M:{um:8.1f}   R:{ur:8.1f}",
                 True, (200, 200, 200)
             )
             screen.blit(t, (10, panel_y))

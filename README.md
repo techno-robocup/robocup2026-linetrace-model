@@ -83,7 +83,7 @@ Recorded sessions are saved to `data/session_YYYYMMDD_HHMMSS/`:
 data/session_20260307_143000/
   linetrace/          # Bottom camera frames (JPEG)
   rescue/             # Front camera frames (JPEG)
-  labels.csv          # timestamp, motor_left, motor_right, yaw, roll, pitch, acc_x, acc_y, acc_z, linetrace_file, rescue_file
+  labels.csv          # timestamp, motor_left, motor_right, yaw, roll, pitch, acc_x, acc_y, acc_z, usonic_l, usonic_m, usonic_r, linetrace_file, rescue_file
 ```
 
 ### 5. Train the model
@@ -106,8 +106,14 @@ uv run python3 training/train.py data/session_* --augment
 # More epochs, smaller batch size
 uv run python3 training/train.py data/session_* --augment --epochs 50 --batch-size 16
 
-# Include gyro data as additional model input
-uv run python3 training/train.py data/session_* --augment --use-gyro
+# Include sensor data (gyro + ultrasonic) as additional model input
+uv run python3 training/train.py data/session_* --augment --use-sensors
+
+# Use LSTM memory model (considers past 5 frames for temporal context)
+uv run python3 training/train.py data/session_* --augment --use-memory
+
+# Memory + sensors + custom sequence length
+uv run python3 training/train.py data/session_* --augment --use-memory --use-sensors --seq-len 10
 ```
 
 Output (saved to `models/`):
@@ -134,7 +140,9 @@ All training options:
 --val-split F         Validation split ratio (default: 0.2)
 --augment             Apply data augmentation (flip + brightness)
 --include-stopped     Include frames where both motors are 1500 (stopped)
---use-gyro            Include gyro data as additional model input
+--use-sensors         Include sensor data (gyro + ultrasonic) as additional model input
+--use-memory          Use CNN+LSTM model with temporal context (considers past frames)
+--seq-len N           Frames per sequence (default: 5, used with --use-memory)
 --output-dir DIR      Directory to save trained models (default: models/)
 ```
 
