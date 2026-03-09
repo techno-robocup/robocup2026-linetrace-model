@@ -1117,6 +1117,7 @@ dependencies = [
     { name = "panda" },
     { name = "pandas" },
     { name = "pygame" },
+    { name = "tensorflow" },
 ]
 
 [package.optional-dependencies]
@@ -1143,6 +1144,7 @@ requires-dist = [
     { name = "pandas", marker = "extra == 'training'", specifier = ">=2.1.0" },
     { name = "pygame", specifier = ">=2.5.0" },
     { name = "pyserial", marker = "extra == 'pi'", specifier = ">=3.5" },
+    { name = "tensorflow", specifier = ">=2.21.0" },
     { name = "tensorflow", marker = "extra == 'training'", specifier = ">=2.15.0" },
 ]
 provides-extras = ["pi", "training"]
