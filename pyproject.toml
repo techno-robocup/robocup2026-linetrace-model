@@ -11,6 +11,7 @@ dependencies = [
     # Training (to be added later)
     # "tensorflow>=2.15.0",
     "panda>=0.3.1",
+    "pandas>=3.0.1",
 ]
 
 [project.optional-dependencies]

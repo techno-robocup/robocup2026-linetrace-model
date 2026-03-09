@@ -1115,6 +1115,7 @@ dependencies = [
     { name = "numpy" },
     { name = "opencv-python" },
     { name = "panda" },
+    { name = "pandas" },
     { name = "pygame" },
 ]
 
@@ -1138,6 +1139,7 @@ requires-dist = [
     { name = "opencv-python", specifier = ">=4.8.0" },
     { name = "opencv-python", marker = "extra == 'pi'", specifier = ">=4.8.0" },
     { name = "panda", specifier = ">=0.3.1" },
+    { name = "pandas", specifier = ">=3.0.1" },
     { name = "pandas", marker = "extra == 'training'", specifier = ">=2.1.0" },
     { name = "pygame", specifier = ">=2.5.0" },
     { name = "pyserial", marker = "extra == 'pi'", specifier = ">=3.5" },
