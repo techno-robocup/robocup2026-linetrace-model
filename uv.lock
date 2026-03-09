@@ -840,6 +840,16 @@ wheels = [
 ]
 
 [[package]]
+name = "panda"
+version = "0.3.1"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "requests" },
+    { name = "setuptools" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/79/03/74996420528fe488ce17c42b6400531c8067d7eb661c304fa3aa8fdad17c/panda-0.3.1.tar.gz", hash = "sha256:f213b848f09268b3e9fce0e103155ab003217c0e27f6048b6194e7f90bb2b716", size = 5833, upload-time = "2015-08-03T13:33:16.589Z" }
+
+[[package]]
 name = "pandas"
 version = "3.0.1"
 source = { registry = "https://pypi.org/simple" }
@@ -1104,6 +1114,7 @@ source = { virtual = "." }
 dependencies = [
     { name = "numpy" },
     { name = "opencv-python" },
+    { name = "panda" },
     { name = "pygame" },
 ]
 
@@ -1126,6 +1137,7 @@ requires-dist = [
     { name = "numpy", marker = "extra == 'pi'", specifier = ">=1.24.0" },
     { name = "opencv-python", specifier = ">=4.8.0" },
     { name = "opencv-python", marker = "extra == 'pi'", specifier = ">=4.8.0" },
+    { name = "panda", specifier = ">=0.3.1" },
     { name = "pandas", marker = "extra == 'training'", specifier = ">=2.1.0" },
     { name = "pygame", specifier = ">=2.5.0" },
     { name = "pyserial", marker = "extra == 'pi'", specifier = ">=3.5" },
