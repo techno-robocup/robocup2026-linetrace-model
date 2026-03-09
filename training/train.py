@@ -154,21 +154,6 @@ def create_sequences(images, labels, sensors, seq_len, session_sizes):
     return seq_images, seq_labels, seq_sensors
 
 
-def augment_seq_horizontal_flip(seq_images, seq_labels, seq_sensors=None):
-    """Horizontal flip augmentation for sequences."""
-    flipped_images = seq_images[:, :, :, ::-1, :].copy()
-    flipped_labels = seq_labels[:, ::-1].copy()
-
-    aug_images = np.concatenate([seq_images, flipped_images])
-    aug_labels = np.concatenate([seq_labels, flipped_labels])
-
-    aug_sensors = None
-    if seq_sensors is not None:
-        aug_sensors = np.concatenate([seq_sensors, seq_sensors.copy()])
-
-    return aug_images, aug_labels, aug_sensors
-
-
 def augment_seq_brightness(seq_images, seq_labels, seq_sensors=None,
                            factor_range=(0.6, 1.4)):
     """Random brightness augmentation for sequences (same factor per sequence)."""
@@ -184,22 +169,6 @@ def augment_seq_brightness(seq_images, seq_labels, seq_sensors=None,
     aug_sensors = None
     if seq_sensors is not None:
         aug_sensors = np.concatenate([seq_sensors, seq_sensors.copy()])
-
-    return aug_images, aug_labels, aug_sensors
-
-
-def augment_horizontal_flip(images, labels, sensors=None):
-    """Horizontal flip augmentation — flips image and swaps left/right motor."""
-    flipped_images = images[:, :, ::-1, :].copy()
-    flipped_labels = labels[:, ::-1].copy()
-
-    aug_images = np.concatenate([images, flipped_images])
-    aug_labels = np.concatenate([labels, flipped_labels])
-
-    aug_sensors = None
-    if sensors is not None:
-        # Sensor values stay the same (flip doesn't change sensor readings)
-        aug_sensors = np.concatenate([sensors, sensors.copy()])
 
     return aug_images, aug_labels, aug_sensors
 
@@ -390,7 +359,7 @@ def main():
     parser.add_argument('--val-split', type=float, default=0.2,
                         help="Validation split ratio (default: 0.2)")
     parser.add_argument('--augment', action='store_true',
-                        help="Apply data augmentation (flip + brightness)")
+                        help="Apply data augmentation (random brightness jitter)")
     parser.add_argument('--include-stopped', action='store_true',
                         help="Include frames where both motors are 1500 (stopped)")
     parser.add_argument('--use-sensors', action='store_true',
@@ -441,8 +410,6 @@ def main():
 
         if args.augment:
             print("Applying augmentation...")
-            seq_images, seq_labels, seq_sensors = augment_seq_horizontal_flip(
-                seq_images, seq_labels, seq_sensors)
             seq_images, seq_labels, seq_sensors = augment_seq_brightness(
                 seq_images, seq_labels, seq_sensors)
             print(f"After augmentation: {len(seq_images)} sequences")
@@ -470,8 +437,6 @@ def main():
         # --- Stateless path: single frame models ---
         if args.augment:
             print("Applying augmentation...")
-            images, labels, sensors = augment_horizontal_flip(
-                images, labels, sensors)
             images, labels, sensors = augment_brightness(
                 images, labels, sensors)
             print(f"After augmentation: {len(images)} frames")

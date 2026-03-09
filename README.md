@@ -129,7 +129,7 @@ The model uses a CNN architecture based on NVIDIA PilotNet (behavioral cloning).
 - Input: 160x90 linetrace camera image (resized from captured resolution)
 - Output: 2 values (left motor, right motor) normalized to [0,1], mapped back to [1000,2000]
 - Includes EarlyStopping (stops if val_loss doesn't improve for 8 epochs) and learning rate reduction
-- `--augment` adds horizontal flip (swaps L/R motors) + random brightness
+- `--augment` adds random brightness jitter
 
 All training options:
 
@@ -138,7 +138,7 @@ All training options:
 --batch-size N        Batch size (default: 32)
 --learning-rate F     Learning rate (default: 0.001)
 --val-split F         Validation split ratio (default: 0.2)
---augment             Apply data augmentation (flip + brightness)
+--augment             Apply data augmentation (random brightness jitter)
 --include-stopped     Include frames where both motors are 1500 (stopped)
 --use-sensors         Include sensor data (gyro + ultrasonic) as additional model input
 --use-memory          Use CNN+LSTM model with temporal context (considers past frames)
