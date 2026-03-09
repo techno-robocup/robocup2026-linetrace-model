@@ -14,7 +14,7 @@ rsync -avz --delete \
     "${PI_HOST}:${PI_DIR}/"
 
 echo "Installing dependencies on Pi..."
-ssh "${PI_HOST}" "pip install opencv-python-headless numpy pyserial 2>/dev/null || sudo apt install -y python3-opencv python3-numpy python3-serial"
+ssh "${PI_HOST}" "cd ${PI_DIR} && uv pip install opencv-python-headless numpy pyserial"
 
 echo ""
 echo "Done. To run the server on the Pi:"

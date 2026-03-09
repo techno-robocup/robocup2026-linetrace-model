@@ -308,8 +308,6 @@ class StreamingServer:
                 frame = frame[:, x_start:x_start + crop_w]
                 frame = cv2.resize(frame, (w, h), interpolation=cv2.INTER_LINEAR)
 
-                # picamera2 captures RGB, but cv2.imencode expects BGR
-                frame = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
                 _, jpeg = cv2.imencode(
                     '.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, JPEG_QUALITY]
                 )
@@ -349,8 +347,6 @@ class StreamingServer:
                 frame = cam.capture_array("lores")
                 # Camera is mounted upside-down
                 frame = cv2.rotate(frame, cv2.ROTATE_180)
-                # picamera2 captures RGB, but cv2.imencode expects BGR
-                frame = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
                 _, jpeg = cv2.imencode(
                     '.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, JPEG_QUALITY - 10]
                 )
