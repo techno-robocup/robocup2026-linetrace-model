@@ -122,55 +122,95 @@ def load_sessions(session_dirs, skip_stopped=True, use_sensors=False):
     return images, labels, sensor_arr, session_sizes
 
 
-def create_sequences(images, labels, sensors, seq_len, session_sizes):
-    """Group consecutive frames into sequences, respecting session boundaries.
+def make_sequence_datasets(images, labels, sensors, seq_len, session_sizes,
+                           batch_size, val_split=0.2, augment=False):
+    """Create tf.data.Datasets that generate sequences on-the-fly.
 
-    Each sequence contains seq_len consecutive frames from the same session.
-    The label is the motor command for the last frame in the sequence.
+    Instead of materializing all sequences in memory (which causes OOM),
+    this keeps only the flat arrays and slices sequences per-batch.
 
     Returns:
-        seq_images: np.array of shape (M, seq_len, H, W, 3).
-        seq_labels: np.array of shape (M, 2).
-        seq_sensors: np.array of shape (M, seq_len, 9) if sensors provided, else None.
+        train_ds: tf.data.Dataset yielding (inputs, labels) batches.
+        val_ds: tf.data.Dataset yielding (inputs, labels) batches.
+        n_train: Number of training samples (after augmentation).
+        n_val: Number of validation samples.
     """
-    seq_images = []
-    seq_labels = []
-    seq_sensors = []
+    import tensorflow as tf
 
+    # Build valid sequence end-indices (respecting session boundaries)
+    valid_indices = []
     offset = 0
     for size in session_sizes:
         for i in range(seq_len - 1, size):
-            idx = offset + i
-            seq_images.append(images[idx - seq_len + 1:idx + 1])
-            seq_labels.append(labels[idx])
-            if sensors is not None:
-                seq_sensors.append(sensors[idx - seq_len + 1:idx + 1])
+            valid_indices.append(offset + i)
         offset += size
+    valid_indices = np.array(valid_indices)
+    np.random.shuffle(valid_indices)
 
-    seq_images = np.array(seq_images, dtype=np.float32)
-    seq_labels = np.array(seq_labels, dtype=np.float32)
-    seq_sensors = np.array(seq_sensors, dtype=np.float32) if sensors is not None else None
+    # Train/val split
+    split = int(len(valid_indices) * (1 - val_split))
+    train_indices = valid_indices[:split]
+    val_indices = valid_indices[split:]
 
-    return seq_images, seq_labels, seq_sensors
+    use_sensors = sensors is not None
 
+    def make_generator(indices):
+        def gen():
+            for idx in indices:
+                img_seq = images[idx - seq_len + 1:idx + 1]
+                label = labels[idx]
+                if use_sensors:
+                    sensor_seq = sensors[idx - seq_len + 1:idx + 1]
+                    yield {'image_seq': img_seq, 'sensor_seq': sensor_seq}, label
+                else:
+                    yield img_seq, label
+        return gen
 
-def augment_seq_brightness(seq_images, seq_labels, seq_sensors=None,
-                           factor_range=(0.6, 1.4)):
-    """Random brightness augmentation for sequences (same factor per sequence)."""
-    n = len(seq_images)
-    factors = np.random.uniform(
-        factor_range[0], factor_range[1], size=(n, 1, 1, 1, 1)
-    )
-    bright_images = np.clip(seq_images * factors, 0.0, 1.0).astype(np.float32)
+    if use_sensors:
+        output_sig = (
+            {
+                'image_seq': tf.TensorSpec((seq_len, MODEL_H, MODEL_W, 3), tf.float32),
+                'sensor_seq': tf.TensorSpec((seq_len, 9), tf.float32),
+            },
+            tf.TensorSpec((2,), tf.float32),
+        )
+    else:
+        output_sig = (
+            tf.TensorSpec((seq_len, MODEL_H, MODEL_W, 3), tf.float32),
+            tf.TensorSpec((2,), tf.float32),
+        )
 
-    aug_images = np.concatenate([seq_images, bright_images])
-    aug_labels = np.concatenate([seq_labels, seq_labels.copy()])
+    train_ds = tf.data.Dataset.from_generator(
+        make_generator(train_indices), output_signature=output_sig)
+    val_ds = tf.data.Dataset.from_generator(
+        make_generator(val_indices), output_signature=output_sig)
 
-    aug_sensors = None
-    if seq_sensors is not None:
-        aug_sensors = np.concatenate([seq_sensors, seq_sensors.copy()])
+    # Augmentation: brightness jitter (applied on-the-fly, doubles data)
+    if augment:
+        if use_sensors:
+            def aug_fn(inputs, label):
+                factor = tf.random.uniform([], 0.6, 1.4)
+                return {
+                    'image_seq': tf.clip_by_value(inputs['image_seq'] * factor, 0.0, 1.0),
+                    'sensor_seq': inputs['sensor_seq'],
+                }, label
+        else:
+            def aug_fn(img_seq, label):
+                factor = tf.random.uniform([], 0.6, 1.4)
+                return tf.clip_by_value(img_seq * factor, 0.0, 1.0), label
+        train_aug = train_ds.map(aug_fn, num_parallel_calls=tf.data.AUTOTUNE)
+        train_ds = train_ds.concatenate(train_aug)
 
-    return aug_images, aug_labels, aug_sensors
+    n_train = len(train_indices) * (2 if augment else 1)
+    n_val = len(val_indices)
+
+    train_ds = (train_ds
+                .shuffle(min(2000, n_train))
+                .batch(batch_size)
+                .prefetch(tf.data.AUTOTUNE))
+    val_ds = val_ds.batch(batch_size).prefetch(tf.data.AUTOTUNE)
+
+    return train_ds, val_ds, n_train, n_val
 
 
 def augment_brightness(images, labels, sensors=None, factor_range=(0.6, 1.4)):
@@ -297,7 +337,7 @@ def build_model_with_memory(seq_len, image_shape=(MODEL_H, MODEL_W, 3),
     return model
 
 
-def export_tflite(keras_model_path, tflite_path):
+def export_tflite(keras_model_path, tflite_path, use_lstm=False):
     """Convert Keras model to TFLite for Raspberry Pi deployment."""
     import tensorflow as tf
 
@@ -305,6 +345,15 @@ def export_tflite(keras_model_path, tflite_path):
     converter = tf.lite.TFLiteConverter.from_keras_model(model)
     # Optimize for Pi (smaller model, faster inference)
     converter.optimizations = [tf.lite.Optimize.DEFAULT]
+
+    if use_lstm:
+        # LSTM requires Select TF ops (not natively supported by TFLite builtins)
+        converter.target_spec.supported_ops = [
+            tf.lite.OpsSet.TFLITE_BUILTINS,
+            tf.lite.OpsSet.SELECT_TF_OPS,
+        ]
+        converter._experimental_lower_tensor_list_ops = False
+
     tflite_model = converter.convert()
 
     with open(tflite_path, 'wb') as f:
@@ -400,38 +449,22 @@ def main():
     print(f"TensorFlow {tf.__version__}")
 
     if args.use_memory:
-        # --- Memory (LSTM) path: create sequences first, then augment ---
+        # --- Memory (LSTM) path: generate sequences on-the-fly ---
         seq_len = args.seq_len
-        print(f"Creating sequences (length={seq_len})...")
-        seq_images, seq_labels, seq_sensors = create_sequences(
+        use_sensors = args.use_sensors and sensors is not None
+        print(f"Building sequence datasets (length={seq_len}, "
+              f"augment={args.augment})...")
+        train_ds, val_ds, n_train, n_val = make_sequence_datasets(
             images, labels, sensors, seq_len, session_sizes,
+            args.batch_size, args.val_split, args.augment,
         )
-        print(f"Created {len(seq_images)} sequences")
-
-        if args.augment:
-            print("Applying augmentation...")
-            seq_images, seq_labels, seq_sensors = augment_seq_brightness(
-                seq_images, seq_labels, seq_sensors)
-            print(f"After augmentation: {len(seq_images)} sequences")
-
-        # Shuffle sequences
-        indices = np.random.permutation(len(seq_images))
-        seq_images = seq_images[indices]
-        seq_labels = seq_labels[indices]
-        if seq_sensors is not None:
-            seq_sensors = seq_sensors[indices]
+        print(f"Dataset: {n_train} train, {n_val} val sequences")
 
         # Build model
-        use_sensors = args.use_sensors and seq_sensors is not None
         print(f"Building CNN+LSTM model (seq_len={seq_len}, "
               f"sensors={'yes' if use_sensors else 'no'})...")
         model = build_model_with_memory(
             seq_len, use_sensors=use_sensors)
-        if use_sensors:
-            train_x = {'image_seq': seq_images, 'sensor_seq': seq_sensors}
-        else:
-            train_x = seq_images
-        labels = seq_labels
 
     else:
         # --- Stateless path: single frame models ---
@@ -465,25 +498,36 @@ def main():
     )
     model.summary()
 
+    callbacks = [
+        tf.keras.callbacks.EarlyStopping(
+            monitor='val_loss', patience=8, restore_best_weights=True
+        ),
+        tf.keras.callbacks.ReduceLROnPlateau(
+            monitor='val_loss', factor=0.5, patience=4, min_lr=1e-6
+        ),
+    ]
+
     # Train
     print(f"\nTraining for {args.epochs} epochs, batch size {args.batch_size}...")
-    history = model.fit(
-        train_x, labels,
-        epochs=args.epochs,
-        batch_size=args.batch_size,
-        validation_split=args.val_split,
-        callbacks=[
-            tf.keras.callbacks.EarlyStopping(
-                monitor='val_loss', patience=8, restore_best_weights=True
-            ),
-            tf.keras.callbacks.ReduceLROnPlateau(
-                monitor='val_loss', factor=0.5, patience=4, min_lr=1e-6
-            ),
-        ],
-    )
-
-    # Evaluate
-    val_loss, val_mae = model.evaluate(train_x, labels, verbose=0)
+    if args.use_memory:
+        history = model.fit(
+            train_ds,
+            epochs=args.epochs,
+            validation_data=val_ds,
+            callbacks=callbacks,
+        )
+        val_loss, val_mae = model.evaluate(val_ds, verbose=0)
+        total_samples = n_train + n_val
+    else:
+        history = model.fit(
+            train_x, labels,
+            epochs=args.epochs,
+            batch_size=args.batch_size,
+            validation_split=args.val_split,
+            callbacks=callbacks,
+        )
+        val_loss, val_mae = model.evaluate(train_x, labels, verbose=0)
+        total_samples = len(labels)
     # Convert MAE back to motor speed units
     mae_speed = val_mae * (MOTOR_MAX - MOTOR_MIN)
     print(f"\nFinal MAE: {val_mae:.4f} (~{mae_speed:.0f} motor speed units)")
@@ -496,7 +540,7 @@ def main():
     print(f"Keras model saved: {keras_path}")
 
     tflite_path = os.path.join(args.output_dir, 'linetrace_model.tflite')
-    export_tflite(keras_path, tflite_path)
+    export_tflite(keras_path, tflite_path, use_lstm=args.use_memory)
 
     plot_path = os.path.join(args.output_dir, 'training_history.png')
     plot_history(history, plot_path)
@@ -510,7 +554,7 @@ def main():
         'use_sensors': args.use_sensors,
         'use_memory': args.use_memory,
         'seq_len': args.seq_len if args.use_memory else 1,
-        'training_samples': len(labels),
+        'training_samples': total_samples,
         'epochs_trained': len(history.history['loss']),
         'final_val_loss': float(history.history['val_loss'][-1]),
         'final_val_mae': float(history.history['val_mae'][-1]),
